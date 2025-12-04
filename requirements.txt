@@ -1,0 +1,69 @@
+# Requirements cho toàn bộ dự án BankAI
+# Bao gồm: Qwen3 Dataset Builder, Training, và Voice Chat Server
+
+# ============================================================================
+# Core Dependencies (Bắt buộc)
+# ============================================================================
+transformers>=4.41.0,<5.0.0
+torch>=2.0.0
+torchaudio
+gradio
+accelerate>=0.20.0
+bitsandbytes>=0.41.0  # Cho quantization (theo Qwen docs)
+psutil  # Cho monitoring tài nguyên
+
+# ============================================================================
+# Dataset Builder & Training Dependencies
+# ============================================================================
+datasets>=2.14.0
+pandas>=1.5.0
+tqdm>=4.65.0
+peft>=0.6.0  # Cho LoRA training
+trl>=0.7.0  # Cho training với RLHF
+tensorboard>=2.13.0  # Cho logging training
+huggingface_hub>=0.20.0  # Cho upload model lên Hugging Face
+
+# ============================================================================
+# Voice Chat Server Dependencies
+# ============================================================================
+openai-whisper  # Cho Speech-to-Text
+pydub  # Cho xử lý audio
+soundfile  # Cho đọc/ghi audio files
+
+# ============================================================================
+# Optional Dependencies (Tùy chọn - Uncomment nếu cần)
+# ============================================================================
+
+# Cho Qwen3VL với image support
+# pillow>=9.0.0
+
+# TTS (Text-to-Speech) - Cho AI Voice Reply
+# Option 1: Coqui TTS (chất lượng cao)
+# TTS==0.22.0
+
+# Option 2: pyttsx3 (nhẹ hơn, không cần model lớn)
+# pyttsx3
+
+# Flash Attention 2 (tùy chọn, để tăng tốc - theo Qwen docs)
+# Cần compile, có thể mất thời gian
+# Cài bằng: pip install flash-attn --no-build-isolation
+# flash-attn>=2.3.0
+
+# ============================================================================
+# Hướng dẫn cài đặt:
+# ============================================================================
+# 1. Cài đặt core dependencies:
+#    pip install -r requirements.txt
+#
+# 2. (Tùy chọn) Cài Flash Attention 2 để tăng tốc:
+#    pip install flash-attn --no-build-isolation
+#
+# 3. (Tùy chọn) Cài TTS cho Voice Chat Server:
+#    pip install TTS==0.22.0
+#    hoặc
+#    pip install git+https://github.com/coqui-ai/TTS.git@v0.22.0
+#    hoặc (nhẹ hơn)
+#    pip install pyttsx3
+#
+# 4. (Tùy chọn) Cài Pillow cho image support:
+#    pip install pillow>=9.0.0
