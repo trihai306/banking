@@ -324,6 +324,7 @@ def load_models(model_name: str = "hainguyen306201/bank-model-2b", install_tts_o
     print("\nĐang tải model (có thể mất vài phút lần đầu)...")
     
     # Kiểm tra GPU và quyết định quantization
+    # Lưu ý: bitsandbytes quantization chỉ hoạt động với CUDA, không hoạt động với MPS (Apple Silicon)
     if torch.cuda.is_available():
         gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         print(f"🚀 GPU: {torch.cuda.get_device_name(0)}")
@@ -336,9 +337,14 @@ def load_models(model_name: str = "hainguyen306201/bank-model-2b", install_tts_o
         else:
             print("⚠️  GPU nhỏ, sẽ dùng quantization 4-bit để tiết kiệm memory")
             use_quantization = True
+    elif torch.backends.mps.is_available():
+        print("🚀 Apple Silicon GPU (MPS) có sẵn")
+        print("   ⚠️  Quantization không hỗ trợ MPS, sẽ load full precision")
+        use_quantization = False
     else:
-        print("⚠️  Không có GPU, sẽ dùng quantization 4-bit")
-        use_quantization = True
+        print("⚠️  Không có GPU (CUDA/MPS), sẽ load full precision trên CPU")
+        print("   ⚠️  Quantization không hỗ trợ CPU, sẽ dùng full precision")
+        use_quantization = False
     
     try:
         if use_quantization:
@@ -347,7 +353,7 @@ def load_models(model_name: str = "hainguyen306201/bank-model-2b", install_tts_o
                 model_name,
                 quantization_config=bnb_config,
                 device_map="auto",
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 trust_remote_code=True,
                 resume_download=True,
                 force_download=False,
@@ -367,7 +373,7 @@ def load_models(model_name: str = "hainguyen306201/bank-model-2b", install_tts_o
             model = Qwen3VLForConditionalGeneration.from_pretrained(
                 model_name,
                 device_map="auto",
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 trust_remote_code=True,
                 resume_download=True,
                 force_download=False,
@@ -409,7 +415,7 @@ def load_models(model_name: str = "hainguyen306201/bank-model-2b", install_tts_o
                 model_name,
                 quantization_config=bnb_config,
                 device_map="auto",
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 trust_remote_code=True,
                 force_download=True,
             )
@@ -423,7 +429,7 @@ def load_models(model_name: str = "hainguyen306201/bank-model-2b", install_tts_o
             model = Qwen3VLForConditionalGeneration.from_pretrained(
                 model_name,
                 device_map="auto",
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 trust_remote_code=True,
                 force_download=True,
                 attn_implementation="flash_attention_2" if use_flash_attention else "sdpa",
@@ -725,25 +731,35 @@ def process_with_model_stream(text: str):
         return
     
     try:
+        # Tạo messages cho model - theo chuẩn Qwen3
+        # Thêm system message để định nghĩa AI là tư vấn ngân hàng
         messages = [
             {
+                "role": "system",
+                "content": "Bạn là một chuyên gia tư vấn ngân hàng chuyên nghiệp và thân thiện. Nhiệm vụ của bạn là trả lời mọi câu hỏi liên quan đến ngân hàng, bao gồm: các sản phẩm và dịch vụ ngân hàng, tài khoản, thẻ, vay vốn, tiết kiệm, đầu tư, bảo hiểm ngân hàng, quy trình giao dịch, phí dịch vụ, và các vấn đề tài chính cá nhân. Hãy trả lời một cách rõ ràng, chính xác và hữu ích. Nếu không chắc chắn về thông tin, hãy đề xuất khách hàng liên hệ trực tiếp với ngân hàng để được tư vấn chi tiết hơn."
+            },
+            {
                 "role": "user",
-                "content": [{"type": "text", "text": text}]
+                "content": text
             }
         ]
         
-        inputs = processor.apply_chat_template(
+        # Process và generate - theo đúng chuẩn Qwen3 từ tài liệu
+        # Theo tài liệu: dùng apply_chat_template với tokenize=False, sau đó tokenize riêng
+        tokenizer = processor.tokenizer
+        
+        # Bước 1: Apply chat template để lấy text (không tokenize)
+        text_formatted = tokenizer.apply_chat_template(
             messages,
-            tokenize=True,
+            tokenize=False,
             add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt"
         )
         
-        if not isinstance(inputs, dict):
-            raise ValueError("Inputs phải là dict sau apply_chat_template")
-        if "input_ids" not in inputs:
-            raise ValueError("Inputs phải có 'input_ids'")
+        # Bước 2: Tokenize text đã format
+        model_inputs = tokenizer([text_formatted], return_tensors="pt")
+        
+        # Đổi tên để dùng trong code cũ
+        inputs = model_inputs
         
         if len(inputs["input_ids"].shape) != 2:
             inputs["input_ids"] = inputs["input_ids"].unsqueeze(0)
@@ -784,19 +800,20 @@ def process_with_model_stream(text: str):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
+        # Generation config theo khuyến nghị Qwen3-Instruct (non-thinking mode)
+        # Theo tài liệu: temperature=0.7, top_p=0.8, top_k=20, min_p=0
         generation_kwargs = {
             **inputs,
-            "max_new_tokens": 512,
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "top_k": 50,
-            "do_sample": True,
-            "pad_token_id": eos_token_id,
-            "eos_token_id": eos_token_id,
-            "use_cache": True,
-            "num_beams": 1,
-            "repetition_penalty": 1.1,
-            "streamer": streamer,
+            "max_new_tokens": 16384,  # Theo khuyến nghị Qwen3-Instruct
+            "temperature": 0.7,  # Khuyến nghị cho Qwen3-Instruct
+            "top_p": 0.8,  # Khuyến nghị cho Qwen3-Instruct
+            "top_k": 20,  # Khuyến nghị cho Qwen3-Instruct
+            "do_sample": True,  # Bật sampling
+            "pad_token_id": eos_token_id,  # Pad token
+            "eos_token_id": eos_token_id,  # EOS token (quan trọng)
+            "use_cache": True,  # KV cache - quan trọng cho tốc độ và memory
+            "repetition_penalty": 1.1,  # Tránh lặp lại
+            "streamer": streamer,  # Streamer cho streaming output
         }
         
         generation_error = [None]
@@ -853,28 +870,39 @@ def process_with_model(text: str) -> str:
         return "Xin lỗi, tôi không nghe rõ. Bạn có thể nói lại được không?"
     
     try:
+        # Tạo messages cho model - theo chuẩn Qwen3
+        # Thêm system message để định nghĩa AI là tư vấn ngân hàng
         messages = [
             {
+                "role": "system",
+                "content": "Bạn là một chuyên gia tư vấn ngân hàng chuyên nghiệp và thân thiện. Nhiệm vụ của bạn là trả lời mọi câu hỏi liên quan đến ngân hàng, bao gồm: các sản phẩm và dịch vụ ngân hàng, tài khoản, thẻ, vay vốn, tiết kiệm, đầu tư, bảo hiểm ngân hàng, quy trình giao dịch, phí dịch vụ, và các vấn đề tài chính cá nhân. Hãy trả lời một cách rõ ràng, chính xác và hữu ích. Nếu không chắc chắn về thông tin, hãy đề xuất khách hàng liên hệ trực tiếp với ngân hàng để được tư vấn chi tiết hơn."
+            },
+            {
                 "role": "user",
-                "content": [{"type": "text", "text": text}]
+                "content": text
             }
         ]
         
-        inputs = processor.apply_chat_template(
+        # Process và generate - theo đúng chuẩn Qwen3 từ tài liệu
+        # Theo tài liệu: dùng apply_chat_template với tokenize=False, sau đó tokenize riêng
+        tokenizer = processor.tokenizer
+        
+        # Bước 1: Apply chat template để lấy text (không tokenize)
+        text_formatted = tokenizer.apply_chat_template(
             messages,
-            tokenize=True,
+            tokenize=False,
             add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt"
         )
         
-        if not isinstance(inputs, dict) or "input_ids" not in inputs:
-            raise ValueError("Inputs không đúng format")
+        # Bước 2: Tokenize text đã format
+        model_inputs = tokenizer([text_formatted], return_tensors="pt")
+        
+        # Đổi tên để dùng trong code cũ
+        inputs = model_inputs
         
         if len(inputs["input_ids"].shape) != 2:
             inputs["input_ids"] = inputs["input_ids"].unsqueeze(0)
         
-        tokenizer = processor.tokenizer
         eos_token_id = getattr(tokenizer, 'eos_token_id', None) or getattr(tokenizer, 'pad_token_id', None)
         if eos_token_id is None:
             raise ValueError("Tokenizer phải có eos_token_id hoặc pad_token_id")
@@ -909,39 +937,31 @@ def process_with_model(text: str) -> str:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             
+            # Generation config theo khuyến nghị Qwen3-Instruct (non-thinking mode)
+            # Theo tài liệu: temperature=0.7, top_p=0.8, top_k=20, min_p=0
             generated_ids = model.generate(
                 **inputs,
-                max_new_tokens=512,
-                temperature=0.7,
-                top_p=0.9,
-                top_k=50,
-                do_sample=True,
-                pad_token_id=eos_token_id,
-                eos_token_id=eos_token_id,
-                use_cache=True,
-                num_beams=2,
-                repetition_penalty=1.1,
-                length_penalty=1.0,
-                early_stopping=True,
-                output_scores=False,
-                return_dict_in_generate=False,
+                max_new_tokens=16384,  # Theo khuyến nghị Qwen3-Instruct
+                temperature=0.7,  # Khuyến nghị cho Qwen3-Instruct
+                top_p=0.8,  # Khuyến nghị cho Qwen3-Instruct
+                top_k=20,  # Khuyến nghị cho Qwen3-Instruct
+                do_sample=True,  # Bật sampling
+                pad_token_id=eos_token_id,  # Pad token
+                eos_token_id=eos_token_id,  # EOS token (quan trọng)
+                use_cache=True,  # KV cache - quan trọng cho tốc độ và memory
+                repetition_penalty=1.1,  # Tránh lặp lại
+                output_scores=False,  # Không cần scores để tăng tốc
+                return_dict_in_generate=False,  # Không cần dict để tăng tốc
             )
         
+        # Decode response - theo đúng chuẩn Qwen3 từ tài liệu
+        # Theo tài liệu: https://qwen.readthedocs.io/en/latest/getting_started/quickstart.html
+        # Lấy output_ids từ vị trí sau input_length
         input_length = inputs["input_ids"].shape[1]
+        output_ids = generated_ids[0][input_length:].tolist()
         
-        if len(generated_ids.shape) == 1:
-            generated_ids = generated_ids.unsqueeze(0)
-        
-        generated_ids_trimmed = [
-            out_ids[input_length:].cpu()
-            for out_ids in generated_ids
-        ]
-        
-        output_text = processor.batch_decode(
-            generated_ids_trimmed,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=True,
-        )[0]
+        # Decode với cấu hình tối ưu
+        output_text = tokenizer.decode(output_ids, skip_special_tokens=True)
         
         output_text = output_text.strip()
         output_text = re.sub(r'\s+', ' ', output_text)
